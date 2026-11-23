@@ -1,0 +1,25 @@
+# Stage 1: Build lean Rust binary inside Docker (zero host installs)
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+COPY Cargo.toml ./
+COPY src ./src
+RUN cargo build --release
+
+# Stage 2: Minimal Debian firewall + netns virtual lab runtime
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nftables \
+    dnsmasq \
+    iproute2 \
+    iputils-ping \
+    curl \
+    dnsutils \
+    netcat-openbsd \
+    python3 \
+    procps \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/release/nulkast-fw /usr/local/bin/nulkast-fw
+COPY lab/smoke_test.sh /usr/local/bin/smoke_test.sh
+RUN chmod +x /usr/local/bin/smoke_test.sh

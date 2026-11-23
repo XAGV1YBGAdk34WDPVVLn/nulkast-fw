@@ -1,0 +1,19 @@
+{
+  "project-tab-title": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "/home/user/.gemini/config/scripts/set_tab_title.py --hook \"📁 nulkast-fw\"",
+        "timeout": 5
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "/home/user/.gemini/config/scripts/set_tab_title.py --hook \"📁 nulkast-fw\"",
+        "timeout": 5
+      }
+    ]
+  }
+}

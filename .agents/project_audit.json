@@ -1,0 +1,18 @@
+{
+  "project_name": "nulkast-fw",
+  "tab_title": "📁 nulkast-fw",
+  "app_entry": "app.py",
+  "cli_entry": "cli.py",
+  "sync_skills_to_global": true,
+  "required_skill_keys": [
+    "name",
+    "description"
+  ],
+  "required_agent_keys": [
+    "name",
+    "description",
+    "inherits",
+    "version",
+    "last_updated"
+  ]
+}
