@@ -7,6 +7,7 @@ use nulkast_fw::config::{
 use nulkast_fw::dns;
 use nulkast_fw::inspect::{nfqueue::spawn_nfqueue_workers, IdsMode, RuleEngine};
 use nulkast_fw::nft;
+use nulkast_fw::shaper;
 use nulkast_fw::store::{Store, StoreWriter};
 use serde::Serialize;
 use std::fs;
@@ -83,6 +84,11 @@ enum Commands {
     PauseDevice { mac: String },
     /// Unpause internet access for a device MAC and apply immediately
     UnpauseDevice { mac: String },
+    /// Manage DOCSIS CAKE SQM traffic shaping (status, apply, disable)
+    Sqm {
+        #[arg(value_parser = ["status", "apply", "disable"])]
+        action: String,
+    },
     /// Start async REST API, WebSocket hub, SQLite WAL collector & embedded Web UI
     Serve {
         #[arg(long, default_value = "0.0.0.0:8265")]
@@ -306,6 +312,32 @@ fn run(cli: Cli) -> Result<(), String> {
             apply_all(&cfg, &cli.state_dir, true)?;
             save_last_good(&cfg, &cli.state_dir)?;
             println!("Unpaused device {}", m);
+        }
+        Commands::Sqm { action } => {
+            let cfg = FwConfig::load(&cli.config)?;
+            match action.as_str() {
+                "apply" => {
+                    shaper::apply_sqm(&cfg)?;
+                    println!(
+                        "Applied CAKE SQM on {} ({}mbit down / {}mbit up, {})",
+                        cfg.interfaces.wan,
+                        cfg.sqm.download_mbps,
+                        cfg.sqm.upload_mbps,
+                        cfg.sqm.overhead
+                    );
+                }
+                "disable" => {
+                    shaper::disable_sqm(&cfg)?;
+                    println!("Disabled SQM on {}", cfg.interfaces.wan);
+                }
+                _ => {
+                    let st = shaper::read_status(&cfg);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?
+                    );
+                }
+            }
         }
         Commands::Serve {
             bind,

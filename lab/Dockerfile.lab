@@ -25,4 +25,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /src/target/release/nulkast-fw /usr/local/bin/nulkast-fw
 COPY lab/smoke_test.sh /usr/local/bin/smoke_test.sh
-RUN chmod +x /usr/local/bin/smoke_test.sh
+COPY lab/stress_test.sh /usr/local/bin/stress_test.sh
+RUN chmod +x /usr/local/bin/smoke_test.sh /usr/local/bin/stress_test.sh

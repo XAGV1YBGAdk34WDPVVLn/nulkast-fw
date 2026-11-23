@@ -45,6 +45,7 @@
       <button class="tab" data-tab="ids">IDS / IPS &amp; Feeds</button>
       <button class="tab" data-tab="devices">Devices</button>
       <button class="tab" data-tab="dns">Internal DNS</button>
+      <button class="tab" data-tab="sqm">SQM / CAKE</button>
       <button class="tab" data-tab="rules">Rules</button>
       <button class="tab" data-tab="audit">Audit Log</button>
     </nav>
@@ -147,6 +148,33 @@
             </thead>
             <tbody id="hosts-body"></tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-sqm" class="tab-panel">
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head"><h2>DOCSIS CAKE Traffic Shaper (Anti-Bufferbloat)</h2></div>
+          <form id="form-sqm" style="padding:14px; display:flex; flex-direction:column; gap:10px;">
+            <label><input id="sqm-enabled" type="checkbox" /> Enable CAKE SQM</label>
+            <div style="display:flex; gap:10px;">
+              <label style="flex:1;">Download (Mbps)<input id="sqm-dl" type="number" min="1" max="10000" style="width:100%;margin-top:4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px;" /></label>
+              <label style="flex:1;">Upload (Mbps)<input id="sqm-ul" type="number" min="1" max="10000" style="width:100%;margin-top:4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px;" /></label>
+              <label style="flex:1;">Link Overhead
+                <select id="sqm-overhead" style="width:100%;margin-top:4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px;">
+                  <option value="docsis">DOCSIS (Cable / Spectrum)</option>
+                  <option value="ethernet">Ethernet / Fiber</option>
+                  <option value="pppoe-ptm">PPPoE / VDSL</option>
+                </select>
+              </label>
+            </div>
+            <button type="submit" class="btn btn-ok" style="align-self:flex-start;">Save &amp; Apply SQM</button>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Live Kernel Qdisc Stats</h2></div>
+          <pre id="sqm-stats" style="margin:0;padding:12px;font-size:12px;overflow:auto;color:var(--muted);">Loading…</pre>
         </div>
       </div>
     </section>

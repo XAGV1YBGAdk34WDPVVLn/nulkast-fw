@@ -5,4 +5,5 @@ pub mod dns;
 pub mod feeds;
 pub mod inspect;
 pub mod nft;
+pub mod shaper;
 pub mod store;

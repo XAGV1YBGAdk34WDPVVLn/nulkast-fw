@@ -68,7 +68,7 @@ pub fn render_ruleset(cfg: &FwConfig) -> Result<String, String> {
             format!("0-{}", cfg.ids.queues - 1)
         };
         format!(
-            "        iifname {{ {lan_set} }} oifname \"{wan}\" tcp dport 443 ct bytes < 8192 queue num {q_spec} bypass comment \"ids_tls_inspect\"\n        iifname {{ {lan_set} }} oifname \"{wan}\" udp dport 53 queue num {q_spec} bypass comment \"ids_dns_bypass_inspect\"\n"
+            "        iifname {{ {lan_set} }} oifname \"{wan}\" tcp flags & (fin|syn|rst|ack) == syn ct state new queue num {q_spec} bypass comment \"ids_syn_scan_inspect\"\n        iifname {{ {lan_set} }} oifname \"{wan}\" tcp dport 443 ct bytes < 8192 queue num {q_spec} bypass comment \"ids_tls_inspect\"\n        iifname {{ {lan_set} }} oifname \"{wan}\" udp dport 53 queue num {q_spec} bypass comment \"ids_dns_bypass_inspect\"\n"
         )
     } else {
         String::new()

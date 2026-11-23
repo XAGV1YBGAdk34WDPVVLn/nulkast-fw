@@ -62,11 +62,35 @@ impl Default for IdsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct SqmConfig {
+    pub enabled: bool,
+    pub download_mbps: u32,
+    pub upload_mbps: u32,
+    pub overhead: String, // "docsis" | "ethernet" | "pppoe-ptm"
+    pub ifb_dev: String,
+}
+
+impl Default for SqmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            download_mbps: 950,
+            upload_mbps: 35,
+            overhead: "docsis".to_string(),
+            ifb_dev: "ifb-dl".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FwConfig {
     pub interfaces: InterfacesConfig,
     pub dhcp: DhcpConfig,
     #[serde(default)]
     pub ids: IdsConfig,
+    #[serde(default)]
+    pub sqm: SqmConfig,
     #[serde(default)]
     pub blocked_ips: Vec<String>,
     #[serde(default)]
@@ -98,6 +122,7 @@ impl Default for FwConfig {
                 local_domain: "lan".to_string(),
             },
             ids: IdsConfig::default(),
+            sqm: SqmConfig::default(),
             blocked_ips: Vec::new(),
             blocked_domains: Vec::new(),
             paused_macs: Vec::new(),
@@ -183,6 +208,16 @@ impl FwConfig {
         }
         if self.ids.queues == 0 || self.ids.queues > 16 {
             return Err("ids.queues must be 1..=16".into());
+        }
+        validate_iface(&self.sqm.ifb_dev)?;
+        if !matches!(self.sqm.overhead.as_str(), "docsis" | "ethernet" | "pppoe-ptm") {
+            return Err(format!(
+                "invalid sqm.overhead '{}' (expected docsis, ethernet, or pppoe-ptm)",
+                self.sqm.overhead
+            ));
+        }
+        if self.sqm.enabled && (self.sqm.download_mbps == 0 || self.sqm.upload_mbps == 0) {
+            return Err("sqm download_mbps and upload_mbps must be > 0 when enabled".into());
         }
         Ok(())
     }

@@ -1,10 +1,11 @@
-.PHONY: test lab-build lab-test clean-lab
+.PHONY: test lab-build lab-test stress-test vm-build vm-test clean-lab
 
 CARGO_CACHE_VOL := nulkast-fw-cargo-cache
 TARGET_CACHE_VOL := nulkast-fw-target-cache
 LAB_IMAGE := nulkast-fw-lab:latest
+VM_IMAGE := nulkast-fw-vm:latest
 
-# Layer 1: Pure Rust unit tests inside Docker (zero host installs)
+# Layer 1: Pure Rust unit & REST contract tests inside Docker (zero host installs)
 test:
 	docker run --rm \
 		-v $(CURDIR):/src \
@@ -18,9 +19,20 @@ test:
 lab-build:
 	docker build -f lab/Dockerfile.lab -t $(LAB_IMAGE) .
 
-# Layer 2: Run full Phase 1 CORE real-packet smoke test in isolated netns lab
+# Layer 2: Run full Phase 1-3 real-packet smoke test in isolated netns lab
 lab-test: lab-build
 	docker run --rm --privileged $(LAB_IMAGE) /usr/local/bin/smoke_test.sh
+
+# Layer 2b: Run adversarial fuzzing, live port-scan burst & kill -9 fail-open stress tests
+stress-test: lab-build
+	docker run --rm --privileged $(LAB_IMAGE) /usr/local/bin/stress_test.sh
+
+# Layer 3: Build & run Dockerized QEMU/KVM stock Debian 6.x VM for real tc CAKE SQM verification
+vm-build: lab-build
+	docker build -f lab/Dockerfile.vm -t $(VM_IMAGE) .
+
+vm-test: vm-build
+	docker run --rm --device /dev/kvm $(VM_IMAGE) /usr/local/bin/vm_sqm_test.sh
 
 # Clean up any leftover containers
 clean-lab:

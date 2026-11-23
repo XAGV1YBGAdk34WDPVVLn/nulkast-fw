@@ -60,7 +60,7 @@
 
   async function loadAll() {
     try {
-      const [status, rules, devices, flows, dns, hosts, alerts, ids, audit] = await Promise.all([
+      const [status, rules, devices, flows, dns, hosts, alerts, ids, sqm, audit] = await Promise.all([
         api('GET', '/status'),
         api('GET', '/rules'),
         api('GET', '/devices'),
@@ -69,6 +69,7 @@
         api('GET', '/dns/hosts'),
         api('GET', '/alerts?limit=60'),
         api('GET', '/ids/status'),
+        api('GET', '/sqm'),
         api('GET', '/audit?limit=60'),
       ]);
 
@@ -140,6 +141,12 @@
           <td class="mono">${esc(a.src_ip)} → ${esc(a.dst_ip)}:${esc(a.dst_port)}</td>
           <td class="mono">${esc(a.indicator)} <span class="muted">${esc(a.detail)}</span></td>
         </tr>`).join('');
+
+      $('sqm-enabled').checked = !!sqm.enabled;
+      $('sqm-dl').value = sqm.download_mbps;
+      $('sqm-ul').value = sqm.upload_mbps;
+      $('sqm-overhead').value = sqm.overhead || 'docsis';
+      $('sqm-stats').textContent = `Egress (${sqm.wan}):\n${sqm.egress_qdisc || '(none)'}\n\nIngress (${sqm.ifb_dev}):\n${sqm.ingress_qdisc || '(none)'}`;
 
       $('audit-body').innerHTML = audit.map((a) => `
         <tr>
@@ -257,6 +264,20 @@
       const res = await api('POST', '/feeds/import', { format, content, apply: true });
       toast(`Imported ${res.imported} ${format} entries`);
       $('feed-content').value = '';
+      loadAll();
+    } catch (err) { toast('Error: ' + err.message); }
+  });
+
+  $('form-sqm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('POST', '/sqm', {
+        enabled: $('sqm-enabled').checked,
+        download_mbps: parseInt($('sqm-dl').value, 10),
+        upload_mbps: parseInt($('sqm-ul').value, 10),
+        overhead: $('sqm-overhead').value,
+      });
+      toast('SQM configuration saved & applied');
       loadAll();
     } catch (err) { toast('Error: ' + err.message); }
   });

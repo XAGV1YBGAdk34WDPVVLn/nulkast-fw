@@ -97,10 +97,11 @@
   - **JA4 / SSLBL TLS malware lists** (Abuse.ch SSLBL)
   - **Suricata `.rules` subset importer** (`tls.sni`, `dns.query`, `ja4.hash`, `content`, `nocase`, `sid`, `msg`, `classtype`; cleanly skips & counts unsupported legacy keywords)
 
-### Phase 4 — Traffic Shaping (`src/shaper/`) — Tested in QEMU/KVM Debian VM
-*Kill Spectrum cable upload bufferbloat automatically (verified in real stock Debian kernel via QEMU/KVM since WSL2 lacks `sch_cake`).*
-- [ ] `tc` + `sch_cake` wrapper (WAN egress + IFB ingress, `diffserv4`, `nat`, `dual-srchost`/`dual-dsthost`, `docsis` overhead)
-- [ ] 1-panel UI: set Spectrum Down/Up Mbps + optional per-device rate ceiling
+### Phase 4 — Traffic Shaping (`src/shaper.rs`) — Verified in QEMU/KVM Debian 6.x VM
+*Kill Spectrum cable upload bufferbloat automatically (verified in real stock Debian `6.1.0-56-amd64` kernel via Dockerized QEMU/KVM since WSL2 lacks `sch_cake`).*
+- [x] `tc` + `sch_cake` wrapper (`src/shaper.rs`: WAN egress + `ifb-dl` ingress, `diffserv4`, `nat`, `dual-srchost`/`dual-dsthost`, `docsis` overhead 18 / mpu 64) + CLI `nulkast-fw sqm status|apply|disable`
+- [x] 1-panel UI + REST API (`GET/POST /api/v1/sqm`): set Spectrum Down/Up Mbps + link overhead + live kernel `tc -s qdisc` stats
+- [x] Adversarial & resilience stress test suite (`lab/stress_test.sh` / `make stress-test`: malformed TLS/DNS fuzzing, live LAN port-scan burst, `kill -9` fail-open resilience) + Dockerized QEMU/KVM stock Debian 6.x VM (`lab/Dockerfile.vm` / `make vm-test`)
 
 ### Phase 5 — GEEKOM iX12 Hardware Cutover & Hardening
 *Deploy cleanly to the GEEKOM iX12 running stock minimal Debian.*

@@ -6,6 +6,7 @@ use crate::dns;
 use crate::feeds;
 use crate::inspect::{IdsMode, SharedRuleEngine};
 use crate::nft;
+use crate::shaper;
 use crate::store::{
     now_unix, DbStats, NewAlert, NewAudit, NewDnsQuery, NewFlow, Store, StoreEvent, StoreWriter,
 };
@@ -83,6 +84,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/ids/status", get(get_ids_status))
         .route("/api/v1/ids/mode", post(post_ids_mode))
         .route("/api/v1/feeds/import", post(post_feeds_import))
+        .route("/api/v1/sqm", get(get_sqm).post(post_sqm))
         .route("/api/v1/audit", get(get_audit))
         .route("/api/v1/firewall/apply", post(post_firewall_apply))
         .route("/api/v1/firewall/confirm", post(post_firewall_confirm))
@@ -743,6 +745,79 @@ async fn post_feeds_import(State(st): State<AppState>, Json(req): Json<FeedImpor
             "invalid feed format (expected ip, domain, ja4, or suricata)",
         ),
     }
+}
+
+async fn get_sqm(State(st): State<AppState>) -> Response {
+    let cfg = match FwConfig::load(&st.config_path) {
+        Ok(c) => c,
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let status = tokio::task::spawn_blocking(move || shaper::read_status(&cfg))
+        .await
+        .unwrap_or_else(|_| shaper::SqmStatus {
+            enabled: false,
+            wan: String::new(),
+            ifb_dev: String::new(),
+            download_mbps: 0,
+            upload_mbps: 0,
+            overhead: String::new(),
+            egress_qdisc: String::new(),
+            ingress_qdisc: String::new(),
+        });
+    Json(status).into_response()
+}
+
+#[derive(Deserialize)]
+struct SqmReq {
+    enabled: bool,
+    download_mbps: u32,
+    upload_mbps: u32,
+    overhead: Option<String>,
+}
+
+async fn post_sqm(State(st): State<AppState>, Json(req): Json<SqmReq>) -> Response {
+    let _guard = st.apply_lock.lock().await;
+    let mut cfg = match FwConfig::load(&st.config_path) {
+        Ok(c) => c,
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    cfg.sqm.enabled = req.enabled;
+    cfg.sqm.download_mbps = req.download_mbps;
+    cfg.sqm.upload_mbps = req.upload_mbps;
+    if let Some(ov) = req.overhead {
+        cfg.sqm.overhead = ov.to_lowercase();
+    }
+    if let Err(e) = cfg.validate() {
+        return err_resp(StatusCode::BAD_REQUEST, e);
+    }
+    if let Err(e) = cfg.save(&st.config_path) {
+        return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    if !st.dry_run {
+        let cfg_clone = cfg.clone();
+        match tokio::task::spawn_blocking(move || shaper::apply_sqm(&cfg_clone)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        }
+    }
+    record_mutation(
+        &st,
+        "update_sqm",
+        if cfg.sqm.enabled { "enabled" } else { "disabled" },
+        &format!(
+            "{}mbit/{}mbit ({})",
+            cfg.sqm.download_mbps, cfg.sqm.upload_mbps, cfg.sqm.overhead
+        ),
+    )
+    .await;
+    Json(serde_json::json!({
+        "enabled": cfg.sqm.enabled,
+        "download_mbps": cfg.sqm.download_mbps,
+        "upload_mbps": cfg.sqm.upload_mbps,
+        "overhead": cfg.sqm.overhead
+    }))
+    .into_response()
 }
 
 async fn get_audit(State(st): State<AppState>, Query(q): Query<LimitQuery>) -> Response {
