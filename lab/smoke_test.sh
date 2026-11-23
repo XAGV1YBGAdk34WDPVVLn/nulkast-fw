@@ -164,4 +164,87 @@ RESP=$(ip netns exec ns-lan curl -sf --max-time 3 http://10.200.0.2:8080/ || tru
   && pass "unconfirmed rule auto-reverted after 3s — connectivity restored!" \
   || fail "dead-man rollback did not restore connectivity"
 
-echo "=== ALL 6 PHASE 1 CORE LAB TESTS PASSED ==="
+echo "=== NulKast-FW Phase 2 Async REST API & Live Visibility Tests ==="
+
+# Start Phase 2 async API + SQLite WAL collector inside ns-fw
+ip netns exec ns-fw nulkast-fw serve --bind 10.100.0.10:8265 >/tmp/nulkast-api.log 2>&1 &
+API_PID=$!
+trap 'kill "${API_PID}" 2>/dev/null || true; cleanup' EXIT
+sleep 1
+
+# 7. REST API health + embedded UI + WAN isolation check
+echo "[7/10] Testing REST /api/v1/health, embedded UI, and WAN isolation..."
+HEALTH=$(ip netns exec ns-lan curl -sf --max-time 3 http://10.100.0.10:8265/api/v1/health || true)
+[[ "${HEALTH}" == *'"status":"ok"'* ]] \
+  && pass "LAN reached REST /api/v1/health (${HEALTH})" \
+  || fail "REST health check failed: '${HEALTH}'"
+
+UI_HTML=$(ip netns exec ns-lan curl -sf --max-time 3 http://10.100.0.10:8265/ || true)
+[[ "${UI_HTML}" == *'NulKast-FW'* ]] \
+  && pass "Embedded zero-build Web UI served at /" \
+  || fail "Embedded Web UI failed"
+
+if ip netns exec ns-wan nc -z -w 2 10.200.0.10 8265 2>/dev/null; then
+  fail "WAN was able to reach management API port 8265!"
+else
+  pass "WAN probe to API port 8265 blocked by default-drop"
+fi
+
+# 8. REST API IP block & unblock enforces real packet drop
+echo "[8/10] Testing REST POST/DELETE /api/v1/rules/ips enforcement..."
+ip netns exec ns-lan curl -sf -X POST http://10.100.0.10:8265/api/v1/rules/ips \
+  -H 'Content-Type: application/json' -d '{"ip":"10.200.0.2"}' >/dev/null
+if ip netns exec ns-lan curl -sf --max-time 2 http://10.200.0.2:8080/ >/dev/null 2>&1; then
+  fail "REST block-ip did not drop traffic to 10.200.0.2!"
+else
+  pass "REST POST /api/v1/rules/ips dropped live WAN traffic"
+fi
+ip netns exec ns-lan curl -sf -X DELETE http://10.100.0.10:8265/api/v1/rules/ips/10.200.0.2 >/dev/null
+RESP=$(ip netns exec ns-lan curl -sf --max-time 3 http://10.200.0.2:8080/ || true)
+[[ "${RESP}" == "client_ip=10.200.0.10" ]] \
+  && pass "REST DELETE /api/v1/rules/ips restored live WAN traffic" \
+  || fail "REST DELETE /api/v1/rules/ips did not restore traffic"
+
+# 9. REST API Internal DNS CRUD + Domain sinkhole + live DNS query visibility in SQLite
+echo "[9/10] Testing REST internal DNS (/api/v1/dns/hosts) + sinkhole + live DNS capture..."
+ip netns exec ns-lan curl -sf -X POST http://10.100.0.10:8265/api/v1/dns/hosts \
+  -H 'Content-Type: application/json' -d '{"domain":"nas.lan","ip":"10.100.0.55"}' >/dev/null
+NAS_IP=$(ip netns exec ns-lan dig +short @10.100.0.10 nas.lan | tail -n1)
+[[ "${NAS_IP}" == "10.100.0.55" ]] \
+  && pass "Internal DNS record nas.lan resolved to ${NAS_IP}" \
+  || fail "Internal DNS failed: expected 10.100.0.55, got '${NAS_IP}'"
+
+ip netns exec ns-lan curl -sf -X POST http://10.100.0.10:8265/api/v1/rules/domains \
+  -H 'Content-Type: application/json' -d '{"domain":"bad.test"}' >/dev/null
+BAD_IP=$(ip netns exec ns-lan dig +short @10.100.0.10 bad.test | tail -n1)
+[[ "${BAD_IP}" == "0.0.0.0" ]] \
+  && pass "REST POST /api/v1/rules/domains sinkholed bad.test -> 0.0.0.0" \
+  || fail "REST sinkhole failed: got '${BAD_IP}'"
+ip netns exec ns-lan dig +short @10.100.0.10 good.test >/dev/null
+
+# Wait for 1.5s batched SQLite WAL flush + collector tick
+sleep 3
+
+DNS_JSON=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/dns/queries?limit=20 || true)
+[[ "${DNS_JSON}" == *'"domain":"bad.test"'* && "${DNS_JSON}" == *'"action":"sinkholed"'* ]] \
+  && pass "Live DNS queries captured into SQLite WAL (bad.test sinkholed)" \
+  || fail "Expected bad.test in /api/v1/dns/queries, got: ${DNS_JSON}"
+
+# 10. Live conntrack flows, LAN device discovery, and audit trail in SQLite WAL
+echo "[10/10] Testing live flows, device discovery, and audit log..."
+FLOWS_JSON=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/flows?limit=20 || true)
+[[ "${FLOWS_JSON}" == *'"dst_ip":"10.200.0.2"'* ]] \
+  && pass "Live conntrack flows captured into SQLite WAL" \
+  || fail "Expected 10.200.0.2 in /api/v1/flows, got: ${FLOWS_JSON}"
+
+DEV_JSON=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/devices || true)
+[[ "${DEV_JSON}" == *'"ip":"10.100.0.20"'* ]] \
+  && pass "LAN device 10.100.0.20 discovered automatically" \
+  || fail "Expected 10.100.0.20 in /api/v1/devices, got: ${DEV_JSON}"
+
+AUDIT_JSON=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/audit?limit=20 || true)
+[[ "${AUDIT_JSON}" == *'"action":"block_ip"'* && "${AUDIT_JSON}" == *'"action":"block_domain"'* ]] \
+  && pass "Audit log persisted REST mutations in SQLite WAL" \
+  || fail "Expected audit entries, got: ${AUDIT_JSON}"
+
+echo "=== ALL 10 PHASE 1 + PHASE 2 LAB TESTS PASSED ==="

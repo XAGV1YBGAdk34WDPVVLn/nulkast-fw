@@ -3,6 +3,7 @@ FROM rust:1-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml ./
 COPY src ./src
+COPY web ./web
 RUN cargo build --release
 
 # Stage 2: Minimal Debian firewall + netns virtual lab runtime
@@ -10,6 +11,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nftables \
     dnsmasq \
+    conntrack \
     iproute2 \
     iputils-ping \
     curl \

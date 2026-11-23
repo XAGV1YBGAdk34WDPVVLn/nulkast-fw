@@ -56,32 +56,34 @@
 > **Rule:** Do **not** start Phase *N+1* until Phase *N* passes all automated tests inside our local virtual lab.
 
 ### Phase 0 — Local Virtual Network Lab (Docker)
-*A repeatable 3-container Linux lab (`wan-sim` ↔ `nulkast-fw` ↔ `lan-client`) booting in < 2 seconds to test real packets safely before hardware arrives.*
-- [ ] Docker Compose 3-node topology with isolated `wan_net` and `lan_net` bridges (`CAP_NET_ADMIN`)
-- [ ] Rust builder container (so builds work cleanly with zero host toolchain clutter)
-- [ ] `lab/smoke_test.sh` harness verifying NAT, default-drop inbound, DNS, blocking, and rollback automatically
+*A repeatable 3-namespace Linux lab (`ns-wan` ↔ `ns-fw` ↔ `ns-lan`) booting in < 1 second inside a single Docker container to test real packets safely before hardware arrives.*
+- [x] Isolated 3-namespace `veth` topology inside Docker (`lab/Dockerfile.lab`, `CAP_NET_ADMIN`)
+- [x] Rust builder container (zero host toolchain clutter)
+- [x] `lab/smoke_test.sh` harness verifying NAT, default-drop inbound, DNS, blocking, and rollback automatically
 
 ### Phase 1 — CORE (Must Be Rock-Solid First)
 *A tight, dependable router & firewall engine with zero UI bloat yet.*
-- [ ] **`src/config/`**: Simple TOML/JSON state file + snapshot history
-- [ ] **`src/nft/`**:
+- [x] **`src/config.rs`**: Strict TOML state file (`#[serde(deny_unknown_fields)]`) + snapshot history
+- [x] **`src/nft.rs`**:
   - Static baseline template (WAN→LAN default drop, LAN→WAN masquerade, established/related, ICMP/DHCP, dedicated `mgmt0` rescue allow)
   - Dynamic kernel sets: `blocked_ips`, `paused_macs`, `allowed_ports`
   - **Atomic validation (`nft -c -f`) + 60-second dead-man rollback**
-- [ ] **`src/dns/`**:
-  - Minimal `dnsmasq` config generator (DHCP leases, static reservations, local DNS, domain sinkhole file)
+- [x] **`src/dns.rs`**:
+  - Minimal `dnsmasq` config generator (DHCP leases, static reservations, local DNS, query logging, domain sinkhole file)
   - Lease parser (maps IP ↔ MAC ↔ Hostname)
-- [ ] **CLI (`nulkast-fw`)**:
+- [x] **CLI (`nulkast-fw`)**:
   - `status`, `apply`, `confirm`, `rollback`, `devices`, `block-ip`, `unblock-ip`, `block-domain`, `pause-device`
-- [ ] **Core Exit Gate:** Lab test proves LAN→WAN NAT works, unsolicited WAN→LAN is dropped, `block-ip` / `block-domain` / `pause-device` enforce immediately, and an unconfirmed rule auto-reverts in 60s.
+- [x] **Core Exit Gate:** Lab test proves LAN→WAN NAT works, unsolicited WAN→LAN is dropped, `block-ip` / `block-domain` / `pause-device` enforce immediately, and an unconfirmed rule auto-reverts in 60s.
 
 ### Phase 2 — Live Visibility & Minimal Web UI
 *See what devices are doing in real time and make 1-click decisions.*
-- [ ] **`src/store/`**: SQLite WAL schema (devices, active/recent flows, DNS queries, rules, audit log) + auto-pruning + batched writes (SSD-friendly)
-- [ ] **`src/api/` + `web/`**:
-  - Lightweight `axum` HTTP + WebSocket server with embedded zero-build HTML/JS UI (dev port `8260`, LAN/mgmt only)
+- [x] **`src/store.rs`**: SQLite WAL schema (devices, active/recent flows, DNS queries, audit log) + auto-pruning + 1.5s batched `mpsc` writes (SSD-friendly)
+- [x] **`src/collector.rs`**: Async background collector (`conntrack -L`, `dnsmasq.log` tailer, `ip neigh` + DHCP leases)
+- [x] **`src/api.rs` + `web/`**:
+  - Lightweight `axum` async REST `/api/v1/...` + `/api/v1/ws/events` WebSocket server with embedded zero-build HTML/CSS/JS UI (allocated port `8265`, LAN/mgmt only)
   - Live feed: `Device → Domain / IP → Bytes → Status`
-  - 1-click actions: Block IP, Block Domain, Pause Device, Open/Close Port
+  - 1-click actions: Block IP, Block Domain, Pause Device, Open/Close Port, Confirm/Rollback
+  - **Internal Home DNS Manager (`/api/v1/dns/hosts`)**: Full CRUD for custom local DNS records (e.g., `nas.lan`, `fw.lan`, `printer.lan`) + automatic DHCP hostname resolution (`*.lan` / `local_domain`) served by `dnsmasq`
 
 ### Phase 3 — Our Own Lean IDS/IPS & Multi-Vendor Rule Ingestion
 *Custom Rust inspector (`src/inspect/`) + rule/feed importers (`src/feeds/`).*

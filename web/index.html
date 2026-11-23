@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NulKast-FW — Firewall &amp; Live Visibility</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>NulKast-FW</h1>
+      <span id="iface-summary" class="muted">loading…</span>
+    </div>
+    <div class="topbar-right">
+      <span id="ws-badge" class="badge badge-warn">WS: connecting</span>
+      <button id="btn-refresh" class="btn btn-ghost">Refresh</button>
+    </div>
+  </header>
+
+  <div id="rollback-banner" class="banner hidden">
+    <div>
+      <strong>Pending Dead-Man Rollback:</strong>
+      <span id="rollback-info"></span>
+    </div>
+    <div class="banner-actions">
+      <button id="btn-confirm" class="btn btn-ok">Confirm Rules</button>
+      <button id="btn-rollback" class="btn btn-danger">Rollback Now</button>
+    </div>
+  </div>
+
+  <main class="container">
+    <section class="stats-grid">
+      <div class="stat-card"><span class="label">Devices</span><strong id="stat-devices">0</strong></div>
+      <div class="stat-card"><span class="label">Recorded Flows</span><strong id="stat-flows">0</strong></div>
+      <div class="stat-card"><span class="label">DNS Queries</span><strong id="stat-dns">0</strong></div>
+      <div class="stat-card"><span class="label">Blocked IPs</span><strong id="stat-ips">0</strong></div>
+      <div class="stat-card"><span class="label">Blocked Domains</span><strong id="stat-domains">0</strong></div>
+      <div class="stat-card"><span class="label">SQLite WAL Size</span><strong id="stat-db">0 KB</strong></div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="live">Live Feed</button>
+      <button class="tab" data-tab="devices">Devices</button>
+      <button class="tab" data-tab="dns">Internal DNS</button>
+      <button class="tab" data-tab="rules">Rules</button>
+      <button class="tab" data-tab="audit">Audit Log</button>
+    </nav>
+
+    <section id="tab-live" class="tab-panel active">
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head"><h2>Active &amp; Recent Flows</h2></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Proto</th><th>Source</th><th>Destination</th><th>Bytes</th><th>Action</th></tr>
+              </thead>
+              <tbody id="flows-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>DNS Queries</h2></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Client</th><th>Domain</th><th>Type</th><th>Status</th><th>Action</th></tr>
+              </thead>
+              <tbody id="dns-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-devices" class="tab-panel">
+      <div class="panel">
+        <div class="panel-head"><h2>LAN Devices</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>IP</th><th>MAC</th><th>Hostname</th><th>Status</th><th>Action</th></tr>
+            </thead>
+            <tbody id="devices-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-dns" class="tab-panel">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Internal Home DNS Records <span id="local-domain-badge" class="muted"></span></h2>
+        </div>
+        <form id="form-host" class="inline-form">
+          <input id="input-host-domain" type="text" placeholder="e.g. nas.lan" required />
+          <input id="input-host-ip" type="text" placeholder="e.g. 10.100.0.5" required />
+          <button type="submit" class="btn btn-ok">Save Record</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Hostname</th><th>IPv4 Address</th><th>Action</th></tr>
+            </thead>
+            <tbody id="hosts-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-rules" class="tab-panel">
+      <div class="three-col">
+        <div class="panel">
+          <div class="panel-head"><h2>Blocked IPs / CIDRs</h2></div>
+          <form id="form-ip" class="inline-form">
+            <input id="input-ip" type="text" placeholder="e.g. 203.0.113.0/24" required />
+            <button type="submit" class="btn btn-danger">Block</button>
+          </form>
+          <ul id="list-ips" class="rule-list"></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Sinkholed Domains</h2></div>
+          <form id="form-domain" class="inline-form">
+            <input id="input-domain" type="text" placeholder="e.g. tracker.example.com" required />
+            <button type="submit" class="btn btn-danger">Sinkhole</button>
+          </form>
+          <ul id="list-domains" class="rule-list"></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Allowed WAN Ports</h2></div>
+          <form id="form-port" class="inline-form">
+            <select id="input-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+            <input id="input-port" type="number" min="1" max="65535" placeholder="Port" required />
+            <button type="submit" class="btn btn-ok">Allow</button>
+          </form>
+          <ul id="list-ports" class="rule-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-audit" class="tab-panel">
+      <div class="panel">
+        <div class="panel-head"><h2>Audit Log</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+            </thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,13 +1,18 @@
 use clap::{Parser, Subcommand};
+use nulkast_fw::api::{build_router, AppState};
+use nulkast_fw::collector::spawn_collectors;
 use nulkast_fw::config::{
     validate_domain, validate_ipv4_or_cidr, validate_mac, FwConfig,
 };
 use nulkast_fw::dns;
 use nulkast_fw::nft;
+use nulkast_fw::store::{Store, StoreWriter};
 use serde::Serialize;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -77,6 +82,15 @@ enum Commands {
     PauseDevice { mac: String },
     /// Unpause internet access for a device MAC and apply immediately
     UnpauseDevice { mac: String },
+    /// Start async REST API, WebSocket hub, SQLite WAL collector & embedded Web UI
+    Serve {
+        #[arg(long, default_value = "0.0.0.0:8265")]
+        bind: SocketAddr,
+        #[arg(long, default_value_t = 7)]
+        retention_days: u64,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Internal detached rollback watchdog
     #[command(hide = true)]
     Watchdog {
@@ -291,6 +305,54 @@ fn run(cli: Cli) -> Result<(), String> {
             apply_all(&cfg, &cli.state_dir, true)?;
             save_last_good(&cfg, &cli.state_dir)?;
             println!("Unpaused device {}", m);
+        }
+        Commands::Serve {
+            bind,
+            retention_days,
+            dry_run,
+        } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("failed to build tokio runtime: {}", e))?;
+
+            rt.block_on(async move {
+                let db_path = cli.state_dir.join("nulkast.db");
+                let store = Arc::new(Store::open(&db_path)?);
+                let writer = StoreWriter::spawn(
+                    Arc::clone(&store),
+                    Duration::from_millis(1500),
+                    retention_days,
+                );
+                let (events_tx, _) = tokio::sync::broadcast::channel(512);
+
+                if !dry_run {
+                    spawn_collectors(
+                        cli.config.clone(),
+                        cli.state_dir.clone(),
+                        writer.clone(),
+                        events_tx.clone(),
+                    );
+                }
+
+                let state = AppState {
+                    config_path: cli.config.clone(),
+                    state_dir: cli.state_dir.clone(),
+                    store,
+                    writer,
+                    events_tx,
+                    apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+                    dry_run,
+                };
+                let app = build_router(state);
+                let listener = tokio::net::TcpListener::bind(bind)
+                    .await
+                    .map_err(|e| format!("failed to bind {}: {}", bind, e))?;
+                println!("NulKast-FW API & UI listening on http://{}", bind);
+                axum::serve(listener, app)
+                    .await
+                    .map_err(|e| format!("server error: {}", e))
+            })?;
         }
         Commands::Watchdog { seconds, token } => {
             std::thread::sleep(Duration::from_secs(seconds));
