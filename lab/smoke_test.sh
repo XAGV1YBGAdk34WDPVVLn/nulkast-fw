@@ -84,6 +84,13 @@ range_end = "10.100.0.200"
 lease_time = "12h"
 upstream_dns = ["10.200.0.2"]
 local_domain = "lan"
+
+[ids]
+enabled = true
+mode = "alert"
+queues = 2
+detect_dns_bypass = true
+port_scan_threshold = 12
 EOF
 
 ip netns exec ns-fw nulkast-fw apply --no-rollback
@@ -247,4 +254,80 @@ AUDIT_JSON=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/audit?
   && pass "Audit log persisted REST mutations in SQLite WAL" \
   || fail "Expected audit entries, got: ${AUDIT_JSON}"
 
-echo "=== ALL 10 PHASE 1 + PHASE 2 LAB TESTS PASSED ==="
+echo "=== NulKast-FW Phase 3 Inline NFQUEUE IDS/IPS & Feed Importer Tests ==="
+
+# Start a self-signed HTTPS server on ns-wan:443 to test real TLS 1.3 ClientHello SNI + FoxIO JA4
+openssl req -x509 -newkey rsa:2048 -keyout /tmp/wan.key -out /tmp/wan.crt \
+  -days 1 -nodes -subj "/CN=evil.test" >/dev/null 2>&1
+ip netns exec ns-wan python3 -c "
+import socket, ssl
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+socket.setdefaulttimeout(3)
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b'tls-ok\n')
+    def log_message(self, *a): pass
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain('/tmp/wan.crt', '/tmp/wan.key')
+srv = ThreadingHTTPServer(('0.0.0.0', 443), H)
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()
+" &
+TLS_PID=$!
+trap 'kill "${API_PID}" "${TLS_PID}" 2>/dev/null || true; cleanup' EXIT
+sleep 0.5
+
+# 11. Multi-vendor feed import (Suricata TLS rule for evil.test + JA4 + Adblock + IP)
+echo "[11/13] Testing multi-vendor feed importer (IP, Domain, JA4, Suricata subset)..."
+SURI_RESP=$(ip netns exec ns-lan curl -sf -X POST http://10.100.0.10:8265/api/v1/feeds/import \
+  -H 'Content-Type: application/json' \
+  -d '{"format":"suricata","content":"drop tls any any -> any 443 (msg:\"Block Evil SNI\"; tls.sni; content:\"evil.test\"; nocase; sid:900001;)\nalert tcp any any -> any any (msg:\"Legacy\"; content:\"x\"; pcre:\"/y/\"; sid:900002;)","apply":false}' || true)
+[[ "${SURI_RESP}" == *'"imported":1'* && "${SURI_RESP}" == *'"skipped_unsupported":1'* ]] \
+  && pass "Suricata subset imported 1 modern rule and cleanly skipped 1 legacy PCRE rule" \
+  || fail "Suricata import failed: ${SURI_RESP}"
+
+JA4_RESP=$(ip netns exec ns-lan curl -sf -X POST http://10.100.0.10:8265/api/v1/feeds/import \
+  -H 'Content-Type: application/json' \
+  -d '{"format":"ja4","content":"t13d1516h2_8daaf6152771_e5627efa2ab1,CobaltStrike","apply":false}' || true)
+[[ "${JA4_RESP}" == *'"imported":1'* ]] \
+  && pass "JA4/SSLBL hash feed imported cleanly" \
+  || fail "JA4 import failed: ${JA4_RESP}"
+
+# 12. Real-packet NFQUEUE TLS SNI + FoxIO JA4 inspection (IDS ALERT -> IPS DROP)
+echo "[12/13] Testing live NFQUEUE TLS SNI + FoxIO JA4 (IDS alert -> IPS inline drop)..."
+TLS_OK=$(ip netns exec ns-lan curl -skf --max-time 3 --resolve evil.test:443:10.200.0.2 https://evil.test/ || true)
+[[ "${TLS_OK}" == "tls-ok" ]] \
+  && pass "IDS ALERT mode allowed TLS handshake to evil.test while inspecting inline" \
+  || fail "Expected tls-ok in ALERT mode, got '${TLS_OK}'"
+
+sleep 2
+ALERTS_JSON=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/alerts?limit=20 || true)
+[[ "${ALERTS_JSON}" == *'evil.test'* && "${ALERTS_JSON}" == *'JA4=t1'* ]] \
+  && pass "Live NFQUEUE captured TLS SNI 'evil.test' + FoxIO JA4 fingerprint in SQLite WAL!" \
+  || fail "Expected evil.test + JA4 alert, got: ${ALERTS_JSON}"
+
+# Promote to IPS DROP mode via 1-click REST endpoint
+ip netns exec ns-lan curl -sf -X POST http://10.100.0.10:8265/api/v1/ids/mode \
+  -H 'Content-Type: application/json' -d '{"mode":"drop"}' >/dev/null
+
+if ip netns exec ns-lan curl -skf --max-time 2 --resolve evil.test:443:10.200.0.2 https://evil.test/ >/dev/null 2>&1; then
+  fail "IPS DROP mode did NOT block TLS ClientHello for evil.test!"
+else
+  pass "IPS DROP mode dropped TLS ClientHello for evil.test inline via NFQUEUE!"
+fi
+
+TLS_GOOD=$(ip netns exec ns-lan curl -skf --max-time 3 --resolve good.test:443:10.200.0.2 https://good.test/ || true)
+[[ "${TLS_GOOD}" == "tls-ok" ]] \
+  && pass "Legitimate TLS SNI (good.test) still passed cleanly in IPS mode" \
+  || fail "Legitimate good.test TLS handshake failed in IPS mode!"
+
+# 13. Live DNS-bypass detection & inline drop (LAN -> external WAN:53)
+echo "[13/13] Testing live DNS-bypass detection & inline drop..."
+ip netns exec ns-lan dig +tries=1 +time=1 @10.200.0.2 bypass.test >/dev/null 2>&1 || true
+sleep 2
+ALERTS_JSON2=$(ip netns exec ns-lan curl -sf http://10.100.0.10:8265/api/v1/alerts?limit=20 || true)
+[[ "${ALERTS_JSON2}" == *'"category":"dns_bypass"'* && "${ALERTS_JSON2}" == *'"indicator":"bypass.test"'* && "${ALERTS_JSON2}" == *'"action":"dropped"'* ]] \
+  && pass "Live DNS-bypass (bypass.test -> 10.200.0.2:53) detected & dropped inline!" \
+  || fail "Expected dns_bypass dropped alert, got: ${ALERTS_JSON2}"
+
+echo "=== ALL 13 PHASE 1 + PHASE 2 + PHASE 3 LAB TESTS PASSED ==="

@@ -60,13 +60,15 @@
 
   async function loadAll() {
     try {
-      const [status, rules, devices, flows, dns, hosts, audit] = await Promise.all([
+      const [status, rules, devices, flows, dns, hosts, alerts, ids, audit] = await Promise.all([
         api('GET', '/status'),
         api('GET', '/rules'),
         api('GET', '/devices'),
         api('GET', '/flows?limit=60'),
         api('GET', '/dns/queries?limit=60'),
         api('GET', '/dns/hosts'),
+        api('GET', '/alerts?limit=60'),
+        api('GET', '/ids/status'),
         api('GET', '/audit?limit=60'),
       ]);
 
@@ -122,6 +124,22 @@
       $('list-ports').innerHTML = rules.allowed_ports.map((p) =>
         `<li><span>${esc(p.proto)}/${esc(p.port)}</span><button class="btn btn-ghost" data-del-port="${esc(p.proto)}/${esc(p.port)}">Close</button></li>`
       ).join('');
+
+      const isDrop = ids.mode === 'drop';
+      $('ids-mode-badge').textContent = isDrop ? 'IPS: DROP' : 'IDS: ALERT';
+      $('ids-mode-badge').className = 'badge ' + (isDrop ? 'badge-danger' : 'badge-warn');
+      $('btn-toggle-ids').textContent = isDrop ? 'Switch to IDS (ALERT)' : 'Switch to IPS (DROP)';
+      $('btn-toggle-ids').dataset.nextMode = isDrop ? 'alert' : 'drop';
+      $('ids-counts').textContent = `JA4: ${ids.ja4_rules} · Suricata: ${ids.suricata_rules} · Domains: ${ids.blocked_domains}`;
+
+      $('alerts-body').innerHTML = alerts.map((a) => `
+        <tr>
+          <td class="mono">${fmtTime(a.ts)}</td>
+          <td><span class="badge badge-warn">${esc(a.category)}</span></td>
+          <td><span class="badge ${a.action === 'dropped' ? 'badge-danger' : 'badge-ok'}">${esc(a.action)}</span></td>
+          <td class="mono">${esc(a.src_ip)} → ${esc(a.dst_ip)}:${esc(a.dst_port)}</td>
+          <td class="mono">${esc(a.indicator)} <span class="muted">${esc(a.detail)}</span></td>
+        </tr>`).join('');
 
       $('audit-body').innerHTML = audit.map((a) => `
         <tr>
@@ -218,6 +236,27 @@
       await api('POST', '/rules/ports', { proto, port });
       $('input-port').value = '';
       toast(`Opened ${proto}/${port}`);
+      loadAll();
+    } catch (err) { toast('Error: ' + err.message); }
+  });
+
+  $('btn-toggle-ids').addEventListener('click', async () => {
+    const next = $('btn-toggle-ids').dataset.nextMode || 'drop';
+    try {
+      await api('POST', '/ids/mode', { mode: next });
+      toast(`IDS/IPS mode switched to ${next.toUpperCase()}`);
+      loadAll();
+    } catch (err) { toast('Error: ' + err.message); }
+  });
+
+  $('form-feed').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const format = $('feed-format').value;
+    const content = $('feed-content').value;
+    try {
+      const res = await api('POST', '/feeds/import', { format, content, apply: true });
+      toast(`Imported ${res.imported} ${format} entries`);
+      $('feed-content').value = '';
       loadAll();
     } catch (err) { toast('Error: ' + err.message); }
   });

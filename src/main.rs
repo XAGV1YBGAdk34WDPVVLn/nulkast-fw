@@ -5,6 +5,7 @@ use nulkast_fw::config::{
     validate_domain, validate_ipv4_or_cidr, validate_mac, FwConfig,
 };
 use nulkast_fw::dns;
+use nulkast_fw::inspect::{nfqueue::spawn_nfqueue_workers, IdsMode, RuleEngine};
 use nulkast_fw::nft;
 use nulkast_fw::store::{Store, StoreWriter};
 use serde::Serialize;
@@ -317,6 +318,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| format!("failed to build tokio runtime: {}", e))?;
 
             rt.block_on(async move {
+                let cfg = FwConfig::load(&cli.config)?;
                 let db_path = cli.state_dir.join("nulkast.db");
                 let store = Arc::new(Store::open(&db_path)?);
                 let writer = StoreWriter::spawn(
@@ -325,6 +327,14 @@ fn run(cli: Cli) -> Result<(), String> {
                     retention_days,
                 );
                 let (events_tx, _) = tokio::sync::broadcast::channel(512);
+                let engine = Arc::new(std::sync::RwLock::new(RuleEngine::new(
+                    cfg.ids.enabled,
+                    IdsMode::from_str(&cfg.ids.mode),
+                    cfg.ids.queues,
+                    cfg.ids.detect_dns_bypass,
+                    cfg.ids.port_scan_threshold as usize,
+                    cfg.blocked_domains.clone(),
+                )));
 
                 if !dry_run {
                     spawn_collectors(
@@ -333,6 +343,14 @@ fn run(cli: Cli) -> Result<(), String> {
                         writer.clone(),
                         events_tx.clone(),
                     );
+                    if cfg.ids.enabled {
+                        spawn_nfqueue_workers(
+                            cfg.ids.queues,
+                            Arc::clone(&engine),
+                            writer.clone(),
+                            events_tx.clone(),
+                        );
+                    }
                 }
 
                 let state = AppState {
@@ -340,6 +358,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     state_dir: cli.state_dir.clone(),
                     store,
                     writer,
+                    engine,
                     events_tx,
                     apply_lock: Arc::new(tokio::sync::Mutex::new(())),
                     dry_run,

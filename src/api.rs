@@ -3,9 +3,11 @@ use crate::config::{
     AllowedPort, FwConfig,
 };
 use crate::dns;
+use crate::feeds;
+use crate::inspect::{IdsMode, SharedRuleEngine};
 use crate::nft;
 use crate::store::{
-    now_unix, DbStats, NewAudit, NewDnsQuery, NewFlow, Store, StoreEvent, StoreWriter,
+    now_unix, DbStats, NewAlert, NewAudit, NewDnsQuery, NewFlow, Store, StoreEvent, StoreWriter,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
@@ -28,6 +30,7 @@ const APP_JS: &str = include_str!("../web/app.js");
 pub enum WsEvent {
     Flow(NewFlow),
     DnsQuery(NewDnsQuery),
+    Alert(NewAlert),
     RuleChanged { action: String, target: String },
     FirewallApplied { rollback_token: Option<String> },
 }
@@ -38,6 +41,7 @@ pub struct AppState {
     pub state_dir: PathBuf,
     pub store: Arc<Store>,
     pub writer: StoreWriter,
+    pub engine: SharedRuleEngine,
     pub events_tx: broadcast::Sender<WsEvent>,
     pub apply_lock: Arc<Mutex<()>>,
     pub dry_run: bool,
@@ -75,6 +79,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/dns/queries", get(get_dns_queries))
         .route("/api/v1/dns/hosts", get(get_dns_hosts).post(post_dns_host))
         .route("/api/v1/dns/hosts/:domain", delete(delete_dns_host))
+        .route("/api/v1/alerts", get(get_alerts))
+        .route("/api/v1/ids/status", get(get_ids_status))
+        .route("/api/v1/ids/mode", post(post_ids_mode))
+        .route("/api/v1/feeds/import", post(post_feeds_import))
         .route("/api/v1/audit", get(get_audit))
         .route("/api/v1/firewall/apply", post(post_firewall_apply))
         .route("/api/v1/firewall/confirm", post(post_firewall_confirm))
@@ -267,6 +275,9 @@ async fn post_block_domain(State(st): State<AppState>, Json(req): Json<DomainReq
     if let Err(e) = apply_nft_and_save_good(&st, &cfg, true).await {
         return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
+    if let Ok(mut eng) = st.engine.write() {
+        eng.blocked_domains.insert(d.clone());
+    }
     record_mutation(&st, "block_domain", &d, "sinkholed via REST API").await;
     (StatusCode::CREATED, Json(serde_json::json!({ "blocked_domain": d }))).into_response()
 }
@@ -291,6 +302,9 @@ async fn delete_block_domain(
     }
     if let Err(e) = apply_nft_and_save_good(&st, &cfg, true).await {
         return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    if let Ok(mut eng) = st.engine.write() {
+        eng.blocked_domains.remove(&d);
     }
     record_mutation(&st, "unblock_domain", &d, "removed from sinkhole via REST API").await;
     Json(serde_json::json!({ "unblocked_domain": d })).into_response()
@@ -582,6 +596,155 @@ async fn delete_dns_host(
     Json(serde_json::json!({ "deleted_host": d })).into_response()
 }
 
+async fn get_alerts(State(st): State<AppState>, Query(q): Query<LimitQuery>) -> Response {
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let store = Arc::clone(&st.store);
+    match tokio::task::spawn_blocking(move || store.list_alerts(limit)).await {
+        Ok(Ok(rows)) => Json(rows).into_response(),
+        Ok(Err(e)) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn get_ids_status(State(st): State<AppState>) -> Response {
+    match st.engine.read() {
+        Ok(eng) => Json(eng.stats()).into_response(),
+        Err(_) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "ids engine lock poisoned"),
+    }
+}
+
+#[derive(Deserialize)]
+struct IdsModeReq {
+    mode: String,
+}
+
+async fn post_ids_mode(State(st): State<AppState>, Json(req): Json<IdsModeReq>) -> Response {
+    let mode_str = req.mode.to_lowercase();
+    if !matches!(mode_str.as_str(), "alert" | "drop") {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid mode (expected 'alert' or 'drop')",
+        );
+    }
+    let mode = IdsMode::from_str(&mode_str);
+    if let Ok(mut eng) = st.engine.write() {
+        eng.mode = mode;
+    }
+    let _guard = st.apply_lock.lock().await;
+    if let Ok(mut cfg) = FwConfig::load(&st.config_path) {
+        cfg.ids.mode = mode_str.clone();
+        let _ = cfg.save(&st.config_path);
+    }
+    record_mutation(&st, "set_ids_mode", &mode_str, "updated IDS/IPS mode via REST API").await;
+    Json(serde_json::json!({ "mode": mode_str })).into_response()
+}
+
+#[derive(Deserialize)]
+struct FeedImportReq {
+    format: String, // "ip" | "domain" | "ja4" | "suricata"
+    content: String,
+    #[serde(default)]
+    apply: bool,
+}
+
+async fn post_feeds_import(State(st): State<AppState>, Json(req): Json<FeedImportReq>) -> Response {
+    let fmt = req.format.to_lowercase();
+    match fmt.as_str() {
+        "ip" => {
+            let ips = feeds::parse_ip_feed(&req.content);
+            let imported = ips.len();
+            let _guard = st.apply_lock.lock().await;
+            let mut cfg = match FwConfig::load(&st.config_path) {
+                Ok(c) => c,
+                Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+            };
+            let existing: HashSet<String> = cfg.blocked_ips.iter().cloned().collect();
+            for ip in ips {
+                if !existing.contains(&ip) {
+                    cfg.blocked_ips.push(ip);
+                }
+            }
+            if let Err(e) = cfg.save(&st.config_path) {
+                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            if req.apply {
+                if let Err(e) = apply_nft_and_save_good(&st, &cfg, false).await {
+                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+                }
+            }
+            record_mutation(&st, "import_feed", "ip", &format!("{} entries", imported)).await;
+            Json(serde_json::json!({ "format": "ip", "imported": imported })).into_response()
+        }
+        "domain" => {
+            let doms = feeds::parse_domain_feed(&req.content);
+            let imported = doms.len();
+            if let Ok(mut eng) = st.engine.write() {
+                for d in &doms {
+                    eng.blocked_domains.insert(d.clone());
+                }
+            }
+            let _guard = st.apply_lock.lock().await;
+            let mut cfg = match FwConfig::load(&st.config_path) {
+                Ok(c) => c,
+                Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+            };
+            let existing: HashSet<String> =
+                cfg.blocked_domains.iter().map(|d| d.to_lowercase()).collect();
+            for d in doms {
+                if !existing.contains(&d) {
+                    cfg.blocked_domains.push(d);
+                }
+            }
+            if let Err(e) = cfg.save(&st.config_path) {
+                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            if req.apply {
+                if let Err(e) = apply_nft_and_save_good(&st, &cfg, true).await {
+                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+                }
+            }
+            record_mutation(&st, "import_feed", "domain", &format!("{} entries", imported)).await;
+            Json(serde_json::json!({ "format": "domain", "imported": imported })).into_response()
+        }
+        "ja4" => {
+            let ja4s = feeds::parse_ja4_feed(&req.content);
+            let imported = ja4s.len();
+            if let Ok(mut eng) = st.engine.write() {
+                for (h, label) in ja4s {
+                    eng.ja4_blocklist.insert(h, label);
+                }
+            }
+            record_mutation(&st, "import_feed", "ja4", &format!("{} hashes", imported)).await;
+            Json(serde_json::json!({ "format": "ja4", "imported": imported })).into_response()
+        }
+        "suricata" => {
+            let parsed = feeds::parse_suricata_subset(&req.content);
+            let imported = parsed.rules.len();
+            let skipped = parsed.skipped_unsupported;
+            if let Ok(mut eng) = st.engine.write() {
+                eng.suricata_rules.extend(parsed.rules);
+            }
+            record_mutation(
+                &st,
+                "import_feed",
+                "suricata",
+                &format!("{} rules ({} skipped)", imported, skipped),
+            )
+            .await;
+            Json(serde_json::json!({
+                "format": "suricata",
+                "imported": imported,
+                "skipped_unsupported": skipped
+            }))
+            .into_response()
+        }
+        _ => err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid feed format (expected ip, domain, ja4, or suricata)",
+        ),
+    }
+}
+
 async fn get_audit(State(st): State<AppState>, Query(q): Query<LimitQuery>) -> Response {
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let store = Arc::clone(&st.store);
@@ -759,12 +922,21 @@ mod tests {
 
         let store = Arc::new(Store::open_in_memory().unwrap());
         let writer = StoreWriter::spawn(Arc::clone(&store), Duration::from_secs(60), 7);
+        let engine = Arc::new(std::sync::RwLock::new(crate::inspect::RuleEngine::new(
+            true,
+            IdsMode::Alert,
+            1,
+            true,
+            12,
+            vec![],
+        )));
         let (events_tx, _) = broadcast::channel(64);
         let state = AppState {
             config_path: cfg_path,
             state_dir: dir.clone(),
             store,
             writer,
+            engine,
             events_tx,
             apply_lock: Arc::new(Mutex::new(())),
             dry_run: true,

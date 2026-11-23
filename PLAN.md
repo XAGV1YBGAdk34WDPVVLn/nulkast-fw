@@ -86,16 +86,16 @@
   - **Internal Home DNS Manager (`/api/v1/dns/hosts`)**: Full CRUD for custom local DNS records (e.g., `nas.lan`, `fw.lan`, `printer.lan`) + automatic DHCP hostname resolution (`*.lan` / `local_domain`) served by `dnsmasq`
 
 ### Phase 3 — Our Own Lean IDS/IPS & Multi-Vendor Rule Ingestion
-*Custom Rust inspector (`src/inspect/`) + rule/feed importers (`src/feeds/`).*
-- [ ] **`src/inspect/`** (Linux `NFQUEUE` across 4 queues `0:3` for N95's 4 cores, with `queue-bypass` fail-open):
-  - Memory-safe Rust parsers for **TLS ClientHello** (SNI + JA4 fingerprint) and **DNS** packets; fast-path the rest of each encrypted stream via `conntrack` mark so 4K movies & 1 Gbps downloads run at wire speed
-  - Behavioral detectors: LAN port-scan detection, DNS-bypass detection (hardcoded `8.8.8.8`), new-destination alerts
-  - Starts in **`ALERT` (IDS)** mode; 1-click UI toggle to promote specific rules/feeds to **`DROP` (IPS)**
-- [ ] **`src/feeds/`** (Modular rule & threat-feed importers):
+*Custom Rust inspector (`src/inspect/`) + rule/feed importers (`src/feeds.rs`).*
+- [x] **`src/inspect/`** (Linux `NFQUEUE` across multi-queue `0..(N-1)` with `queue ... bypass` fail-open & `ct bytes < 8192` handshake-only fast-path):
+  - Memory-safe Rust parsers for **TLS ClientHello** (SNI + official FoxIO JA4 fingerprint) and **DNS wire** packets; bulk stream traffic stays in kernel at wire speed
+  - Behavioral detectors: LAN port-scan detection, DNS-bypass detection (hardcoded external UDP/53)
+  - Starts in **`ALERT` (IDS)** mode; 1-click REST & UI toggle (`POST /api/v1/ids/mode`) to promote to **`DROP` (IPS)**
+- [x] **`src/feeds.rs`** (Modular rule & threat-feed importers via `POST /api/v1/feeds/import`):
   - **IP / CIDR lists** (Spamhaus DROP, FireHOL, Abuse.ch Feodo) → loaded straight into kernel `nftables` sets
   - **Domain lists** (Hosts, Adblock `||domain^`, Hagezi/OISD, NulKast lists) → enforced at both DNS & TLS SNI
-  - **JA4 / JA3 TLS malware lists** (Abuse.ch SSLBL)
-  - **Suricata `.rules` subset importer** (~12 high-value modern keywords: IP/port, `dns.query`, `tls.sni`, `tls.cert_subject`, `ja4.hash`, `http.host`, `http.uri`, `content`, `nocase`, `sid`, `msg`, `classtype`; cleanly skips unsupported legacy keywords)
+  - **JA4 / SSLBL TLS malware lists** (Abuse.ch SSLBL)
+  - **Suricata `.rules` subset importer** (`tls.sni`, `dns.query`, `ja4.hash`, `content`, `nocase`, `sid`, `msg`, `classtype`; cleanly skips & counts unsupported legacy keywords)
 
 ### Phase 4 — Traffic Shaping (`src/shaper/`) — Tested in QEMU/KVM Debian VM
 *Kill Spectrum cable upload bufferbloat automatically (verified in real stock Debian kernel via QEMU/KVM since WSL2 lacks `sch_cake`).*

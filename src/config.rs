@@ -40,9 +40,33 @@ pub struct StaticLease {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct IdsConfig {
+    pub enabled: bool,
+    pub mode: String, // "alert" or "drop"
+    pub queues: u16,
+    pub detect_dns_bypass: bool,
+    pub port_scan_threshold: u16,
+}
+
+impl Default for IdsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: "alert".to_string(),
+            queues: 4,
+            detect_dns_bypass: true,
+            port_scan_threshold: 12,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FwConfig {
     pub interfaces: InterfacesConfig,
     pub dhcp: DhcpConfig,
+    #[serde(default)]
+    pub ids: IdsConfig,
     #[serde(default)]
     pub blocked_ips: Vec<String>,
     #[serde(default)]
@@ -73,6 +97,7 @@ impl Default for FwConfig {
                 upstream_dns: vec!["1.1.1.1".to_string(), "9.9.9.9".to_string()],
                 local_domain: "lan".to_string(),
             },
+            ids: IdsConfig::default(),
             blocked_ips: Vec::new(),
             blocked_domains: Vec::new(),
             paused_macs: Vec::new(),
@@ -149,6 +174,15 @@ impl FwConfig {
         for (domain, ip) in &self.local_hosts {
             validate_domain(domain)?;
             validate_ipv4(ip)?;
+        }
+        if !matches!(self.ids.mode.as_str(), "alert" | "drop") {
+            return Err(format!(
+                "invalid ids.mode '{}' (expected 'alert' or 'drop')",
+                self.ids.mode
+            ));
+        }
+        if self.ids.queues == 0 || self.ids.queues > 16 {
+            return Err("ids.queues must be 1..=16".into());
         }
         Ok(())
     }

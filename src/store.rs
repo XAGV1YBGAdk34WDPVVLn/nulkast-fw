@@ -83,10 +83,38 @@ pub struct NewAudit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRecord {
+    pub id: i64,
+    pub ts: u64,
+    pub severity: String,
+    pub category: String,
+    pub action: String,
+    pub src_ip: String,
+    pub dst_ip: String,
+    pub dst_port: u16,
+    pub indicator: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewAlert {
+    pub ts: u64,
+    pub severity: String,
+    pub category: String,
+    pub action: String,
+    pub src_ip: String,
+    pub dst_ip: String,
+    pub dst_port: u16,
+    pub indicator: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbStats {
     pub devices_count: u64,
     pub flows_count: u64,
     pub dns_queries_count: u64,
+    pub alerts_count: u64,
     pub audit_count: u64,
     pub db_size_bytes: u64,
 }
@@ -101,6 +129,7 @@ pub enum StoreEvent {
     },
     RecordFlow(NewFlow),
     RecordDnsQuery(NewDnsQuery),
+    RecordAlert(NewAlert),
     RecordAudit(NewAudit),
     Prune {
         flow_dns_cutoff_ts: u64,
@@ -183,6 +212,20 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_dns_ts ON dns_queries(ts DESC);
             CREATE INDEX IF NOT EXISTS idx_dns_domain ON dns_queries(domain);
 
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                action TEXT NOT NULL,
+                src_ip TEXT NOT NULL,
+                dst_ip TEXT NOT NULL,
+                dst_port INTEGER NOT NULL,
+                indicator TEXT NOT NULL,
+                detail TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts DESC);
+
             CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts INTEGER NOT NULL,
@@ -262,6 +305,26 @@ impl Store {
                     )
                     .map_err(|e| format!("insert dns_query failed: {}", e))?;
                 }
+                StoreEvent::RecordAlert(a) => {
+                    tx.execute(
+                        r#"
+                        INSERT INTO alerts (ts, severity, category, action, src_ip, dst_ip, dst_port, indicator, detail)
+                        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                        "#,
+                        params![
+                            a.ts as i64,
+                            a.severity,
+                            a.category,
+                            a.action,
+                            a.src_ip,
+                            a.dst_ip,
+                            a.dst_port as i64,
+                            a.indicator,
+                            a.detail
+                        ],
+                    )
+                    .map_err(|e| format!("insert alert failed: {}", e))?;
+                }
                 StoreEvent::RecordAudit(a) => {
                     tx.execute(
                         r#"
@@ -286,6 +349,11 @@ impl Store {
                         params![*flow_dns_cutoff_ts as i64],
                     )
                     .map_err(|e| format!("prune dns_queries failed: {}", e))?;
+                    tx.execute(
+                        "DELETE FROM alerts WHERE ts < ?1",
+                        params![*audit_cutoff_ts as i64],
+                    )
+                    .map_err(|e| format!("prune alerts failed: {}", e))?;
                     tx.execute(
                         "DELETE FROM audit_log WHERE ts < ?1",
                         params![*audit_cutoff_ts as i64],
@@ -387,6 +455,37 @@ impl Store {
         Ok(out)
     }
 
+    pub fn list_alerts(&self, limit: usize) -> Result<Vec<AlertRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "store mutex poisoned".to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, ts, severity, category, action, src_ip, dst_ip, dst_port, indicator, detail
+                 FROM alerts ORDER BY id DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok(AlertRecord {
+                    id: r.get(0)?,
+                    ts: r.get::<_, i64>(1)? as u64,
+                    severity: r.get(2)?,
+                    category: r.get(3)?,
+                    action: r.get(4)?,
+                    src_ip: r.get(5)?,
+                    dst_ip: r.get(6)?,
+                    dst_port: r.get::<_, i64>(7)? as u16,
+                    indicator: r.get(8)?,
+                    detail: r.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
     pub fn list_audit_log(&self, limit: usize) -> Result<Vec<AuditRecord>, String> {
         let conn = self.conn.lock().map_err(|_| "store mutex poisoned".to_string())?;
         let mut stmt = conn
@@ -425,6 +524,9 @@ impl Store {
         let dns_queries_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM dns_queries", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
+        let alerts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM alerts", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
         let audit_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
@@ -434,6 +536,7 @@ impl Store {
             devices_count: devices_count as u64,
             flows_count: flows_count as u64,
             dns_queries_count: dns_queries_count as u64,
+            alerts_count: alerts_count as u64,
             audit_count: audit_count as u64,
             db_size_bytes,
         })

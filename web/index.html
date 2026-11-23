@@ -42,6 +42,7 @@
 
     <nav class="tabs">
       <button class="tab active" data-tab="live">Live Feed</button>
+      <button class="tab" data-tab="ids">IDS / IPS &amp; Feeds</button>
       <button class="tab" data-tab="devices">Devices</button>
       <button class="tab" data-tab="dns">Internal DNS</button>
       <button class="tab" data-tab="rules">Rules</button>
@@ -71,6 +72,46 @@
               <tbody id="dns-body"></tbody>
             </table>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-ids" class="tab-panel">
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Inline NFQUEUE Alerts (TLS SNI / JA4 / DNS Bypass)</h2>
+            <div>
+              <span id="ids-mode-badge" class="badge badge-warn">IDS: alert</span>
+              <button id="btn-toggle-ids" class="btn btn-danger">Switch to IPS (DROP)</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Time</th><th>Category</th><th>Action</th><th>Source → Dest</th><th>Indicator / Detail</th></tr>
+              </thead>
+              <tbody id="alerts-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Threat Feed &amp; Rule Importer</h2>
+            <span id="ids-counts" class="muted"></span>
+          </div>
+          <form id="form-feed" style="padding:12px; display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; gap:8px;">
+              <select id="feed-format" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px;">
+                <option value="suricata">Suricata .rules subset</option>
+                <option value="ja4">JA4 / SSLBL hashes</option>
+                <option value="domain">Domain / Hosts / Adblock</option>
+                <option value="ip">IP / CIDR threat list</option>
+              </select>
+              <button type="submit" class="btn btn-ok">Import Feed</button>
+            </div>
+            <textarea id="feed-content" rows="10" placeholder="Paste IP/CIDR, ||domain^, JA4 CSV, or Suricata .rules..." style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:12px;"></textarea>
+          </form>
         </div>
       </div>
     </section>
